@@ -1,0 +1,13 @@
+{
+    "water_data": {
+        "ph": 7.0,
+        "nitrate": 15.0,
+        "nitrite": 0.1,
+        "ammonia": 0.0,
+        "gh": 8.0,
+        "kh": 6.0
+    },
+    "fish_type": "ネオンテトラ",
+    "tank_type": "freshwater",
+    "notes": "水換え後も硝酸塩が少し高め。魚は元気。"
+}
