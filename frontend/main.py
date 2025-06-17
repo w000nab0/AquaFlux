@@ -28,8 +28,7 @@ def create_common_layout():
         ui.label('AQUAFLUX').classes('text-h6 text-weight-bold')
         with ui.row().classes('items-center'):
             ui.link('飼育ログ', '/logs').classes('text-white q-px-sm')
-            ui.link('水質解析', '/analyze').classes('text-white q-px-sm') # /logs/new などに組み込む予定
-            ui.link('AIアドバイス', '/advice').classes('text-white q-px-sm') # /logs/new などに組み込む予定
+            ui.link('AIアドバイス', '/advice').classes('text-white q-px-sm')
             
             if is_logged_in:
                 # ユーザー名表示を追加 (あれば)
@@ -44,8 +43,7 @@ def create_common_layout():
         ui.separator()
         ui.link('ホーム', '/').classes('q-pa-md block')
         ui.link('飼育ログ', '/logs').classes('q-pa-md block')
-        ui.link('水質解析', '/analyze').classes('q-pa-md block') # /logs/new などに組み込む予定
-        ui.link('AIアドバイス', '/advice').classes('q-pa-md block') # /logs/new などに組み込む予定
+        ui.link('AIアドバイス', '/advice').classes('q-pa-md block')
         if not is_logged_in:
             ui.link('ログイン', '/login').classes('q-pa-md block')
             ui.link('登録', '/register').classes('q-pa-md block')
@@ -154,14 +152,17 @@ async def logs_page():
     async def fetch_logs():
         # ローディングスピナー表示
         with log_data_container:
-            
-            
             ui.spinner(size='lg').classes('absolute-center')
             ui.label('ログデータをロード中...').classes('text-lg text-gray-500 mt-4')
 
         log_data_container.clear() # 既存の内容をクリア
 
         access_token = app.storage.user.get('access_token')
+        if not access_token:
+            ui.notify('ログインしていません。', type='negative')
+            ui.navigate.to('/login')
+            return
+
         headers = {'Authorization': f'Bearer {access_token}'}
 
         try:
@@ -183,14 +184,12 @@ async def logs_page():
                 {'name': 'tank_type', 'label': '水槽の種類', 'field': 'tank_type', 'sortable': True},
                 {'name': 'water_data', 'label': '水質データ', 'field': 'water_data'},
                 {'name': 'notes', 'label': 'メモ', 'field': 'notes'},
-                {'name': 'actions', 'label': '操作', 'field': 'actions', 'align': 'center'}
             ]
             rows = []
             for log in logs:
                 # water_data をより見やすく整形
                 water_data_str = "未記録"
                 if log['water_data']:
-                    # pHは小数点1桁、他は整数で表示する例
                     data_parts = []
                     for k, v in log['water_data'].items():
                         if k == 'ph' and v is not None:
@@ -206,28 +205,33 @@ async def logs_page():
                     'tank_type': log['tank_type'],
                     'water_data': water_data_str,
                     'notes': (log['notes'][:50] + '...') if log['notes'] and len(log['notes']) > 50 else (log['notes'] if log['notes'] else 'なし'),
-                    'actions': None
                 }
                 rows.append(row)
 
             with log_data_container:
-                log_table = ui.table(columns=columns, rows=rows, row_key='id').classes('w-full shadow-lg rounded-lg')
+                def handle_row_click(e):
+                    row = e.args[1]  # The row upon which user has clicked/tapped
+                    ui.navigate.to(f"/logs/{row['id']}")
                 
-                def create_action_buttons(row_id):
-                    with ui.row().classes('justify-center gap-2'):
-                        ui.button('詳細', icon='info', on_click=lambda: ui.navigate.to(f'/logs/{row_id}')).props('flat dense')
-                        ui.button('編集', icon='edit', on_click=lambda: ui.navigate.to(f'/logs/{row_id}/edit')).props('flat dense')
-                        ui.button('削除', icon='delete', on_click=lambda: delete_log_entry(row_id)).props('flat dense color=red')
-
-                for row in rows:
-                    row['actions'] = create_action_buttons(row['id'])
+                log_table = ui.table(
+                    columns=columns,
+                    rows=rows,
+                    row_key='id'
+                ).classes('w-full shadow-lg rounded-lg')
+                log_table.on('rowClick', handle_row_click)
 
         except requests.exceptions.RequestException as e:
-            ui.notify(f'飼育ログの取得に失敗しました: {e}', type='negative')
+            if response.status_code == 401:
+                ui.notify('認証エラー: ログインし直してください。', type='negative')
+                ui.navigate.to('/login')
+            else:
+                ui.notify(f'飼育ログの取得に失敗しました: {e}', type='negative')
+            print(f"Error details: {str(e)}")  # エラーの詳細をコンソールに出力
         except ValueError as e:
             ui.notify(f'JSONパースエラー: {e}', type='negative')
         except Exception as e:
             ui.notify(f'予期せぬエラーが発生しました: {e}', type='negative')
+            print(f"Error details: {str(e)}")  # エラーの詳細をコンソールに出力
 
     ui.timer(0.1, fetch_logs, once=True) # ページ表示後に非同期でロード
     
@@ -266,10 +270,18 @@ async def new_log_entry_page():
         
         notes_input = ui.textarea('メモ').classes('w-full mt-4').props('rows=3')
         fish_type_input = ui.input('魚種 (例: ネオンテトラ)').classes('w-full mt-4')
-        tank_type_input = ui.input('水槽の種類 (例: 60cm水槽)').classes('w-full mt-4')
+        
+        tank_type_options_map = {
+            'freshwater': '淡水',
+            'saltwater': '海水',
+        }
+        tank_type_input = ui.select(options=tank_type_options_map, value='freshwater', label='水槽の種類').classes('w-full mt-4')
 
         # ここに generate_ai_advice 関数を定義
         async def generate_ai_advice():
+            # シンプルなローディング通知
+            ui.notify('🧠 AI分析中... お待ちください', type='ongoing')
+            
             access_token = app.storage.user.get('access_token')
             if not access_token:
                 ui.notify('ログインしていません。', type='negative')
@@ -291,25 +303,25 @@ async def new_log_entry_page():
                 "tank_type": tank_type_input.value,
             }
 
-            dialog = ui.dialog().props('persistent')
-            with dialog:
-                with ui.card().classes('items-center'):
-                    ui.spinner(size='xl', thickness=10).classes('text-blue-500')
-                    ui.label('AIアドバイスを生成中...').classes('text-lg mt-4')
-            dialog.open()
-
             try:
                 headers = {
                     'Authorization': f'Bearer {access_token}',
                     'Content-Type': 'application/json'
                 }
-                response = requests.post(f"{DJANGO_API_BASE_URL}/generate-advice/", headers=headers, json=advice_data)
+                # 非同期でAPIリクエストを実行（Connection lost対策）
+                import asyncio
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(
+                    None, 
+                    lambda: requests.post(f"{DJANGO_API_BASE_URL}/generate-advice/", headers=headers, json=advice_data, timeout=60)
+                )
                 response.raise_for_status()
 
                 advice_result = response.json()
                 advice_text = advice_result.get('advice', 'アドバイスを生成できませんでした。')
                 
-                dialog.close()
+                # アドバイス完了通知
+                ui.notify('✅ AIアドバイス生成完了！', type='positive')
 
                 with ui.dialog() as advice_dialog:
                     with ui.card().classes('w-full max-w-2xl q-pa-md'):
@@ -319,33 +331,36 @@ async def new_log_entry_page():
                 advice_dialog.open()
 
             except requests.exceptions.RequestException as e:
-                dialog.close()
-                error_response = response.json() if hasattr(response, 'json') else {}
+                error_response = response.json() if 'response' in locals() and hasattr(response, 'json') else {}
                 error_message = error_response.get('detail', str(e))
-                ui.notify(f'AIアドバイス生成失敗: {error_message}', type='negative')
-                if "API key" in error_message or "API_KEY" in error_message:
-                    ui.notify("Gemini APIキーが正しく設定されているか確認してください。", type='negative', timeout=5000)
+                ui.notify(f'❌ AIアドバイス生成失敗: {error_message}', type='negative')
             except Exception as e:
-                dialog.close()
-                ui.notify(f'予期せぬエラーが発生しました: {e}', type='negative')
-
-        ui.button('AIアドバイスを生成', on_click=generate_ai_advice).classes('px-6 py-3 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700 w-full')
+                ui.notify(f'❌ 予期せぬエラーが発生しました: {e}', type='negative')
 
         ui.label('水質試験紙をアップロードして自動入力').classes('text-md font-semibold mt-4 mb-2')
         
         # ここに handle_image_upload 関数を定義
         async def handle_image_upload(e):
+            print("=== 画像アップロード開始 ===")
+            print(f"Event object: {e}")
+            print(f"Event attributes: {dir(e)}")
+            print(f"File name: {e.name if hasattr(e, 'name') else 'No name attribute'}")
+            print(f"File type: {e.type if hasattr(e, 'type') else 'No type attribute'}")
+            
             access_token = app.storage.user.get('access_token')
+            print(f"Access token exists: {bool(access_token)}")
+            
             if not access_token:
                 ui.notify('ログインしていません。', type='negative')
                 ui.navigate.to('/login')
                 return
 
-            if not e.files:
+            if not hasattr(e, 'name') or not e.name:
+                print("No file name found in upload event")
                 ui.notify('ファイルが選択されていません。', type='negative')
                 return
 
-            file = e.files[0]
+            print(f"Uploaded file: {e.name}, type: {getattr(e, 'type', 'unknown')}")
             
             dialog = ui.dialog().props('persistent')
             with dialog:
@@ -355,52 +370,111 @@ async def new_log_entry_page():
             dialog.open()
 
             try:
-                image_bytes = await e.content.read() 
-                files = {'image': (file.name, image_bytes, file.type)}
+                print("=== 画像データ読み込み開始 ===")
+                image_bytes = e.content.read() 
+                print(f"Image bytes length: {len(image_bytes)}")
+                
+                files = {'image': (e.name, image_bytes, getattr(e, 'type', 'image/jpeg'))}
                 headers = {'Authorization': f'Bearer {access_token}'}
-
-                response = requests.post(f"{DJANGO_API_BASE_URL}/analyze-image/", headers=headers, files=files)
+                api_url = f"{DJANGO_API_BASE_URL}/analyze-image/"
+                
+                print(f"API URL: {api_url}")
+                print(f"Headers: {headers}")
+                print("=== APIリクエスト送信 ===")
+                
+                response = requests.post(api_url, headers=headers, files=files)
+                print(f"Response status: {response.status_code}")
+                print(f"Response headers: {dict(response.headers)}")
+                print(f"Raw response content: {response.text[:500]}...")
+                
                 response.raise_for_status()
 
                 analysis_result = response.json()
                 water_data_from_image = analysis_result.get('water_data', {})
+                
+                # デバッグ情報をコンソールに出力
+                print(f"Analysis result: {analysis_result}")
+                print(f"Water data from image: {water_data_from_image}")
 
-                ph_input.value = water_data_from_image.get('ph', ph_input.value)
-                kh_input.value = water_data_from_image.get('kh', kh_input.value)
-                gh_input.value = water_data_from_image.get('gh', gh_input.value)
-                no2_input.value = water_data_from_image.get('no2', no2_input.value)
-                no3_input.value = water_data_from_image.get('no3', no3_input.value)
-                cl2_input.value = water_data_from_image.get('cl2', cl2_input.value)
+                # フォームフィールドを更新（複数の手法を試す）
+                updated_fields = []
+                if 'ph' in water_data_from_image and water_data_from_image['ph'] is not None:
+                    value = float(water_data_from_image['ph'])
+                    ph_input.value = value
+                    ph_input.set_value(value)
+                    ph_input.update()
+                    updated_fields.append(f"pH: {value}")
+                if 'kh' in water_data_from_image and water_data_from_image['kh'] is not None:
+                    value = float(water_data_from_image['kh'])
+                    kh_input.value = value
+                    kh_input.set_value(value)
+                    kh_input.update()
+                    updated_fields.append(f"KH: {value}")
+                if 'gh' in water_data_from_image and water_data_from_image['gh'] is not None:
+                    value = float(water_data_from_image['gh'])
+                    gh_input.value = value
+                    gh_input.set_value(value)
+                    gh_input.update()
+                    updated_fields.append(f"GH: {value}")
+                if 'no2' in water_data_from_image and water_data_from_image['no2'] is not None:
+                    value = float(water_data_from_image['no2'])
+                    no2_input.value = value
+                    no2_input.set_value(value)
+                    no2_input.update()
+                    updated_fields.append(f"NO2: {value}")
+                if 'no3' in water_data_from_image and water_data_from_image['no3'] is not None:
+                    value = float(water_data_from_image['no3'])
+                    no3_input.value = value
+                    no3_input.set_value(value)
+                    no3_input.update()
+                    updated_fields.append(f"NO3: {value}")
+                if 'cl2' in water_data_from_image and water_data_from_image['cl2'] is not None:
+                    value = float(water_data_from_image['cl2'])
+                    cl2_input.value = value
+                    cl2_input.set_value(value)
+                    cl2_input.update()
+                    updated_fields.append(f"Cl2: {value}")
+                
+                # 強制的にフォームを再描画
+                ui.run_javascript('document.querySelectorAll("input").forEach(input => input.dispatchEvent(new Event("input")))')
+                
+                if updated_fields:
+                    ui.notify(f'更新されたフィールド: {", ".join(updated_fields)}', type='info')
+                    ui.notify('画像から水質データを自動入力しました！', type='positive')
+                else:
+                    ui.notify('画像から水質データを抽出できませんでした', type='warning')
 
                 ui.notify('画像から水質データを自動入力しました！', type='positive')
 
             except requests.exceptions.RequestException as e:
+                print(f"=== APIリクエストエラー ===")
+                print(f"Request exception: {e}")
+                if 'response' in locals():
+                    print(f"Response status: {response.status_code}")
+                    print(f"Response text: {response.text}")
                 dialog.close()
-                error_response = response.json() if hasattr(response, 'json') else {}
+                error_response = response.json() if 'response' in locals() and hasattr(response, 'json') else {}
                 error_message = error_response.get('detail', str(e))
                 ui.notify(f'画像解析失敗: {error_message}', type='negative')
+                print(f"Error message shown: {error_message}")
             except Exception as e:
+                print(f"=== 予期せぬエラー ===")
+                print(f"Exception: {e}")
+                print(f"Exception type: {type(e)}")
+                import traceback
+                print(f"Traceback: {traceback.format_exc()}")
                 ui.notify(f'予期せぬエラーが発生しました: {e}', type='negative')
             finally:
                 dialog.close()
+                print("=== 画像アップロード処理終了 ===")
+                print("--- --- --- --- --- --- ---")
 
         ui.upload(label='画像をアップロード', on_upload=handle_image_upload, auto_upload=True, max_file_size=5_000_000, max_files=1).classes('w-full')
         ui.label('推奨: JPEG/PNG形式, 最大5MB').classes('text-sm text-gray-500')
 
         ui.separator().classes('my-6')
 
-        ui.label('魚と水槽の情報').classes('text-lg font-semibold mb-4 text-primary')
-        fish_type_input = ui.input('魚の種類', placeholder='例: ネオンテトラ').classes('w-full mb-4')
         
-        tank_type_options_map = {
-            'freshwater': '淡水',
-            'saltwater': '海水',
-        }
-        tank_type_input = ui.select(options=tank_type_options_map, value='freshwater', label='水槽の種類').classes('w-full mb-4')
-        
-        notes_input = ui.textarea('メモ', placeholder='今日の観察、水換え記録など').classes('w-full h-32 mb-6')
-
-
         # 保存ボタン
         async def save_log_entry():
             # 入力されたデータを集める
@@ -447,76 +521,9 @@ async def new_log_entry_page():
                 ui.notify(f'予期せぬエラーが発生しました: {e}', type='negative')
 
 
-        ui.button('飼育ログを保存', on_click=save_log_entry).classes('px-6 py-3 bg-green-600 text-white rounded-lg shadow-md hover:bg-green-700 w-full mb-4')
+        ai_advice_button = ui.button('AIアドバイスを生成', icon='psychology', on_click=generate_ai_advice).classes('px-6 py-3 bg-purple-600 text-white rounded-lg shadow-md hover:bg-purple-700 w-full mb-4')
         
-        # AIアドバイスボタン 
-        async def generate_ai_advice():
-            access_token = app.storage.user.get('access_token')
-            if not access_token:
-                ui.notify('ログインしていません。', type='negative')
-                ui.navigate.to('/login')
-                return
-
-            # AIアドバイス生成に必要なデータをフォームから収集
-            water_data = {
-                "ph": ph_input.value,
-                "kh": kh_input.value,
-                "gh": gh_input.value,
-                "no2": no2_input.value,
-                "no3": no3_input.value,
-                "cl2": cl2_input.value,
-            }
-            advice_data = {
-                "water_data": water_data,
-                "notes": notes_input.value,
-                "fish_type": fish_type_input.value,
-                "tank_type": tank_type_input.value,
-            }
-
-            # ローディング表示
-            dialog = ui.dialog().props('persistent') # ユーザーが閉じられないようにpersistent
-            with dialog:
-                with ui.card().classes('items-center'):
-                    ui.spinner(size='xl', thickness=10).classes('text-blue-500')
-                    ui.label('AIアドバイスを生成中...').classes('text-lg mt-4')
-            dialog.open() # ダイアログを開く
-
-            try:
-                headers = {
-                    'Authorization': f'Bearer {access_token}',
-                    'Content-Type': 'application/json'
-                }
-                response = requests.post(f"{DJANGO_API_BASE_URL}/generate-advice/", headers=headers, json=advice_data)
-                response.raise_for_status()
-
-                advice_result = response.json()
-                advice_text = advice_result.get('advice', 'アドバイスを生成できませんでした。')
-                
-                dialog.close() # ローディングダイアログを閉じる
-
-                # 新しいダイアログでアドバイスを表示
-                with ui.dialog() as advice_dialog:
-                    with ui.card().classes('w-full max-w-2xl q-pa-md'):
-                        ui.label('AIアドバイス').classes('text-h6 text-primary mb-4')
-                        # マークダウン形式でアドバイスを表示
-                        ui.markdown(advice_text).classes('whitespace-pre-wrap q-mb-md')
-                        ui.button('閉じる', on_click=advice_dialog.close).classes('w-full')
-                advice_dialog.open()
-
-            except requests.exceptions.RequestException as e:
-                dialog.close() # ローディングダイアログを閉じる
-                error_response = response.json() if hasattr(response, 'json') else {}
-                error_message = error_response.get('detail', str(e))
-                ui.notify(f'AIアドバイス生成失敗: {error_message}', type='negative')
-                # もしGemini APIキー関連のエラーなら詳細を表示
-                if "API key" in error_message or "API_KEY" in error_message:
-                    ui.notify("Gemini APIキーが正しく設定されているか確認してください。", type='negative', timeout=5000)
-            except Exception as e:
-                dialog.close() # ローディングダイアログを閉じる
-                ui.notify(f'予期せぬエラーが発生しました: {e}', type='negative')
-
-        # 'AIアドバイスを生成' ボタンの on_click ハンドラを更新
-        ui.button('AIアドバイスを生成', on_click=generate_ai_advice).classes('px-6 py-3 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700 w-full')
+        ui.button('飼育ログを保存', icon='save', on_click=save_log_entry).classes('px-6 py-3 bg-green-600 text-white rounded-lg shadow-md hover:bg-green-700 w-full mb-4')
         
         ui.button('キャンセル', on_click=lambda: ui.navigate.to('/logs')).props('flat color=grey').classes('w-full mt-4')
 
@@ -559,14 +566,121 @@ async def delete_log_entry(log_id: int):
 
 
 
-# AIアドバイスページ (placeholder) - 後で統合
+# AIアドバイスページ - 最新ログによるアドバイス表示
 @ui.page('/advice')
-def advice_page():
+async def advice_page():
     create_common_layout()
-    with ui.column().classes('q-pa-md w-full'):
-        ui.label('AIアドバイス').classes('text-h5 text-primary q-mb-md')
-        ui.label('この機能は飼育ログの新規作成・編集ページから利用されます。').classes('text-grey-6')
-        ui.label('直接アクセスすることはあまりありません。').classes('text-grey-6')
+    
+    # 認証チェック
+    if not app.storage.user.get('access_token'):
+        ui.notify('ログインしてください。', type='negative')
+        ui.navigate.to('/login')
+        return
+
+    ui.add_head_html('<title>AIアドバイス - AquaFlux</title>')
+    
+    with ui.column().classes('w-full max-w-4xl mx-auto p-6'):
+        ui.label('🤖 AIアドバイス').classes('text-3xl font-bold mb-6 text-center w-full text-primary')
+        ui.label('最新の飼育ログデータに基づいてAIがアドバイスを提供します').classes('text-lg text-center mb-8 text-gray-600')
+        
+        advice_container = ui.column().classes('w-full')
+
+        async def fetch_latest_log_and_advice():
+            with advice_container:
+                ui.spinner(size='lg').classes('mx-auto')
+                ui.label('最新の飼育ログを確認中...').classes('text-lg text-gray-500 mt-4 text-center')
+
+            advice_container.clear()
+
+            access_token = app.storage.user.get('access_token')
+            headers = {'Authorization': f'Bearer {access_token}'}
+
+            try:
+                # 最新のログを取得
+                response = requests.get(f"{DJANGO_API_BASE_URL}/logs/", headers=headers)
+                response.raise_for_status()
+                logs = response.json()
+
+                if not logs:
+                    # ログがない場合のメッセージ
+                    with advice_container:
+                        with ui.card().classes('w-full p-8 text-center bg-gray-50'):
+                            ui.icon('info', size='3rem').classes('text-blue-500 mb-4')
+                            ui.label('飼育ログがまだありません').classes('text-2xl font-bold mb-4')
+                            ui.label('AIアドバイスを受けるには、まず飼育ログを作成してください。').classes('text-lg mb-6 text-gray-600')
+                            ui.button('飼育ログを作成', icon='add', on_click=lambda: ui.navigate.to('/logs/new')).classes('px-8 py-3 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700')
+                    return
+
+                # 最新ログでAIアドバイスを生成
+                latest_log = logs[0]
+                advice_data = {
+                    "water_data": latest_log.get('water_data', {}),
+                    "notes": latest_log.get('notes', ''),
+                    "fish_type": latest_log.get('fish_type', ''),
+                    "tank_type": latest_log.get('tank_type', 'freshwater'),
+                }
+
+                with advice_container:
+                    # 最新ログ情報表示
+                    with ui.card().classes('w-full p-6 mb-6 bg-blue-50'):
+                        ui.label('📊 参照している飼育ログ').classes('text-xl font-bold mb-4 text-blue-800')
+                        ui.label(f'日付: {latest_log.get("log_date", "N/A")}').classes('text-lg mb-2')
+                        ui.label(f'魚種: {latest_log.get("fish_type", "未設定")}').classes('text-lg mb-2')
+                        ui.label(f'水槽: {latest_log.get("tank_type", "淡水")}').classes('text-lg mb-2')
+                        
+                        water_data = latest_log.get('water_data', {})
+                        if water_data:
+                            water_info = []
+                            for key, value in water_data.items():
+                                if value is not None:
+                                    water_info.append(f"{key.upper()}: {value}")
+                            if water_info:
+                                ui.label(f'水質: {", ".join(water_info)}').classes('text-lg')
+
+                    # AIアドバイス生成中表示
+                    with ui.card().classes('w-full p-6 text-center') as advice_card:
+                        ui.spinner(size='xl', thickness=10).classes('text-purple-500 mb-4')
+                        ui.label('🧠 AI が分析中...').classes('text-xl font-bold mb-2')
+                        ui.label('水質データと過去の履歴を分析してアドバイスを生成しています').classes('text-gray-600')
+
+                # AIアドバイス生成
+                try:
+                    response = requests.post(f"{DJANGO_API_BASE_URL}/generate-advice/", headers=headers, json=advice_data)
+                    response.raise_for_status()
+
+                    advice_result = response.json()
+                    advice_text = advice_result.get('advice', 'アドバイスを生成できませんでした。')
+                    
+                    # アドバイス表示に切り替え
+                    advice_card.clear()
+                    with advice_card:
+                        ui.label('🤖 AIアドバイス').classes('text-2xl font-bold mb-4 text-purple-700')
+                        ui.markdown(advice_text).classes('text-lg whitespace-pre-wrap mb-6')
+                        
+                        with ui.row().classes('justify-center gap-4'):
+                            ui.button('新しいログを作成', icon='add', on_click=lambda: ui.navigate.to('/logs/new')).classes('px-6 py-3 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700')
+                            ui.button('ログ一覧を見る', icon='list', on_click=lambda: ui.navigate.to('/logs')).classes('px-6 py-3 bg-gray-600 text-white rounded-lg shadow-md hover:bg-gray-700')
+
+                except requests.exceptions.RequestException as e:
+                    advice_card.clear()
+                    with advice_card:
+                        ui.icon('error', size='3rem').classes('text-red-500 mb-4')
+                        ui.label('アドバイス生成に失敗しました').classes('text-xl font-bold mb-4 text-red-600')
+                        error_response = response.json() if 'response' in locals() and hasattr(response, 'json') else {}
+                        error_message = error_response.get('detail', str(e))
+                        ui.label(f'エラー: {error_message}').classes('text-gray-600 mb-4')
+                        ui.button('再試行', icon='refresh', on_click=fetch_latest_log_and_advice).classes('px-6 py-3 bg-purple-600 text-white rounded-lg shadow-md hover:bg-purple-700')
+
+            except requests.exceptions.RequestException as e:
+                advice_container.clear()
+                with advice_container:
+                    with ui.card().classes('w-full p-6 text-center'):
+                        ui.icon('error', size='3rem').classes('text-red-500 mb-4')
+                        ui.label('データの取得に失敗しました').classes('text-xl font-bold mb-4 text-red-600')
+                        ui.label(f'エラー: {e}').classes('text-gray-600 mb-4')
+                        ui.button('再試行', icon='refresh', on_click=fetch_latest_log_and_advice).classes('px-6 py-3 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700')
+
+        ui.timer(0.1, fetch_latest_log_and_advice, once=True)
 
 
 # 飼育ログ詳細ページ
@@ -624,6 +738,70 @@ async def log_detail_page(log_id: int):
                 ui.label('メモ').classes('text-xl font-bold text-primary mb-2')
                 ui.label(log_data.get('notes', 'なし')).classes('text-md whitespace-pre-wrap') # 改行を保持
 
+                ui.separator().classes('my-6')
+                
+                # AIアドバイス機能
+                ui.label('このデータのAIアドバイス').classes('text-xl font-bold text-primary mb-2')
+                
+                async def generate_ai_advice_detail():
+                    ui.notify('AIアドバイス生成を開始します', type='info')
+                    
+                    access_token = app.storage.user.get('access_token')
+                    if not access_token:
+                        ui.notify('ログインしていません。', type='negative')
+                        ui.navigate.to('/login')
+                        return
+
+                    # ログデータからアドバイス生成データを作成
+                    advice_data = {
+                        "water_data": water_data,
+                        "notes": log_data.get('notes', ''),
+                        "fish_type": log_data.get('fish_type', ''),
+                        "tank_type": log_data.get('tank_type', 'freshwater'),
+                    }
+
+                    # ローディング表示
+                    dialog = ui.dialog().props('persistent')
+                    with dialog:
+                        with ui.card().classes('items-center'):
+                            ui.spinner(size='xl', thickness=10).classes('text-blue-500')
+                            ui.label('AIアドバイスを生成中...').classes('text-lg mt-4')
+                    dialog.open()
+
+                    try:
+                        headers = {
+                            'Authorization': f'Bearer {access_token}',
+                            'Content-Type': 'application/json'
+                        }
+                        response = requests.post(f"{DJANGO_API_BASE_URL}/generate-advice/", headers=headers, json=advice_data)
+                        response.raise_for_status()
+
+                        advice_result = response.json()
+                        advice_text = advice_result.get('advice', 'アドバイスを生成できませんでした。')
+                        
+                        dialog.close()
+
+                        # 新しいダイアログでアドバイスを表示
+                        with ui.dialog() as advice_dialog:
+                            with ui.card().classes('w-full max-w-2xl q-pa-md'):
+                                ui.label('AIアドバイス').classes('text-h6 text-primary mb-4')
+                                ui.markdown(advice_text).classes('whitespace-pre-wrap q-mb-md')
+                                ui.button('閉じる', on_click=advice_dialog.close).classes('w-full')
+                        advice_dialog.open()
+
+                    except requests.exceptions.RequestException as e:
+                        dialog.close()
+                        error_response = response.json() if 'response' in locals() and hasattr(response, 'json') else {}
+                        error_message = error_response.get('detail', str(e))
+                        ui.notify(f'AIアドバイス生成失敗: {error_message}', type='negative')
+                        if "API key" in error_message or "API_KEY" in error_message:
+                            ui.notify("Gemini APIキーが正しく設定されているか確認してください。", type='negative', timeout=5000)
+                    except Exception as e:
+                        dialog.close()
+                        ui.notify(f'予期せぬエラーが発生しました: {e}', type='negative')
+
+                ui.button('AIアドバイスを生成', icon='psychology', on_click=generate_ai_advice_detail).classes('px-6 py-3 bg-purple-600 text-white rounded-lg shadow-md hover:bg-purple-700 w-full mb-4')
+                
                 ui.separator().classes('my-6')
                 
                 with ui.row().classes('w-full justify-center gap-4'):
@@ -751,6 +929,223 @@ async def edit_log_entry_page(log_id: int):
 
         await load_log_data()
 
+        # 画像アップロード機能
+        ui.label('水質試験紙をアップロードして自動入力').classes('text-md font-semibold mt-4 mb-2')
+        
+        async def handle_image_upload(e):
+            print("=== 画像アップロード開始 ===")
+            print(f"Event object: {e}")
+            print(f"Event attributes: {dir(e)}")
+            print(f"File name: {e.name if hasattr(e, 'name') else 'No name attribute'}")
+            print(f"File type: {e.type if hasattr(e, 'type') else 'No type attribute'}")
+            
+            access_token = app.storage.user.get('access_token')
+            print(f"Access token exists: {bool(access_token)}")
+            
+            if not access_token:
+                ui.notify('ログインしていません。', type='negative')
+                ui.navigate.to('/login')
+                return
+
+            if not hasattr(e, 'name') or not e.name:
+                print("No file name found in upload event")
+                ui.notify('ファイルが選択されていません。', type='negative')
+                return
+
+            print(f"Uploaded file: {e.name}, type: {getattr(e, 'type', 'unknown')}")
+            
+            dialog = ui.dialog().props('persistent')
+            with dialog:
+                with ui.card().classes('items-center'):
+                    ui.spinner(size='xl', thickness=10).classes('text-blue-500')
+                    ui.label('画像を解析中...').classes('text-lg mt-4')
+            dialog.open()
+
+            try:
+                print("=== 画像データ読み込み開始 ===")
+                image_bytes = e.content.read() 
+                print(f"Image bytes length: {len(image_bytes)}")
+                
+                files = {'image': (e.name, image_bytes, getattr(e, 'type', 'image/jpeg'))}
+                headers = {'Authorization': f'Bearer {access_token}'}
+                api_url = f"{DJANGO_API_BASE_URL}/analyze-image/"
+                
+                print(f"API URL: {api_url}")
+                print(f"Headers: {headers}")
+                print("=== APIリクエスト送信 ===")
+                
+                response = requests.post(api_url, headers=headers, files=files)
+                print(f"Response status: {response.status_code}")
+                print(f"Response headers: {dict(response.headers)}")
+                print(f"Raw response content: {response.text[:500]}...")
+                
+                response.raise_for_status()
+
+                analysis_result = response.json()
+                water_data_from_image = analysis_result.get('water_data', {})
+                
+                # デバッグ情報をコンソールに出力
+                print(f"Analysis result: {analysis_result}")
+                print(f"Water data from image: {water_data_from_image}")
+
+                # フォームフィールドを更新（複数の手法を試す）
+                updated_fields = []
+                if 'ph' in water_data_from_image and water_data_from_image['ph'] is not None:
+                    value = float(water_data_from_image['ph'])
+                    ph_input.value = value
+                    ph_input.set_value(value)
+                    ph_input.update()
+                    updated_fields.append(f"pH: {value}")
+                if 'kh' in water_data_from_image and water_data_from_image['kh'] is not None:
+                    value = float(water_data_from_image['kh'])
+                    kh_input.value = value
+                    kh_input.set_value(value)
+                    kh_input.update()
+                    updated_fields.append(f"KH: {value}")
+                if 'gh' in water_data_from_image and water_data_from_image['gh'] is not None:
+                    value = float(water_data_from_image['gh'])
+                    gh_input.value = value
+                    gh_input.set_value(value)
+                    gh_input.update()
+                    updated_fields.append(f"GH: {value}")
+                if 'no2' in water_data_from_image and water_data_from_image['no2'] is not None:
+                    value = float(water_data_from_image['no2'])
+                    no2_input.value = value
+                    no2_input.set_value(value)
+                    no2_input.update()
+                    updated_fields.append(f"NO2: {value}")
+                if 'no3' in water_data_from_image and water_data_from_image['no3'] is not None:
+                    value = float(water_data_from_image['no3'])
+                    no3_input.value = value
+                    no3_input.set_value(value)
+                    no3_input.update()
+                    updated_fields.append(f"NO3: {value}")
+                if 'cl2' in water_data_from_image and water_data_from_image['cl2'] is not None:
+                    value = float(water_data_from_image['cl2'])
+                    cl2_input.value = value
+                    cl2_input.set_value(value)
+                    cl2_input.update()
+                    updated_fields.append(f"Cl2: {value}")
+                
+                # 強制的にフォームを再描画
+                ui.run_javascript('document.querySelectorAll("input").forEach(input => input.dispatchEvent(new Event("input")))')
+                
+                if updated_fields:
+                    ui.notify(f'更新されたフィールド: {", ".join(updated_fields)}', type='info')
+                    ui.notify('画像から水質データを自動入力しました！', type='positive')
+                else:
+                    ui.notify('画像から水質データを抽出できませんでした', type='warning')
+
+                ui.notify('画像から水質データを自動入力しました！', type='positive')
+
+            except requests.exceptions.RequestException as e:
+                print(f"=== APIリクエストエラー ===")
+                print(f"Request exception: {e}")
+                if 'response' in locals():
+                    print(f"Response status: {response.status_code}")
+                    print(f"Response text: {response.text}")
+                dialog.close()
+                error_response = response.json() if 'response' in locals() and hasattr(response, 'json') else {}
+                error_message = error_response.get('detail', str(e))
+                ui.notify(f'画像解析失敗: {error_message}', type='negative')
+                print(f"Error message shown: {error_message}")
+            except Exception as e:
+                print(f"=== 予期せぬエラー ===")
+                print(f"Exception: {e}")
+                print(f"Exception type: {type(e)}")
+                import traceback
+                print(f"Traceback: {traceback.format_exc()}")
+                ui.notify(f'予期せぬエラーが発生しました: {e}', type='negative')
+            finally:
+                dialog.close()
+                print("=== 画像アップロード処理終了 ===")
+                print("--- --- --- --- --- --- ---")
+
+        ui.upload(label='画像をアップロード', on_upload=handle_image_upload, auto_upload=True, max_file_size=5_000_000, max_files=1).classes('w-full')
+        ui.label('推奨: JPEG/PNG形式, 最大5MB').classes('text-sm text-gray-500')
+
+        ui.separator().classes('my-6')
+
+        # AIアドバイス機能
+        ui.label('AIアドバイス').classes('text-lg font-semibold mb-4 text-primary')
+        
+        async def generate_ai_advice_edit():
+            ui.notify('AIアドバイス生成を開始します', type='info')
+            
+            access_token = app.storage.user.get('access_token')
+            if not access_token:
+                ui.notify('ログインしていません。', type='negative')
+                ui.navigate.to('/login')
+                return
+
+            # AIアドバイス生成に必要なデータをフォームから収集
+            water_data = {
+                "ph": ph_input.value,
+                "kh": kh_input.value,
+                "gh": gh_input.value,
+                "no2": no2_input.value,
+                "no3": no3_input.value,
+                "cl2": cl2_input.value,
+            }
+            advice_data = {
+                "water_data": water_data,
+                "notes": notes_input.value,
+                "fish_type": fish_type_input.value,
+                "tank_type": tank_type_input.value,
+            }
+
+            # AI思考中のローディング表示（強化版）
+            dialog = ui.dialog().props('persistent no-backdrop-dismiss')
+            with dialog:
+                with ui.card().classes('items-center p-8 min-w-96 text-center'):
+                    ui.spinner(size='xl', thickness=10).classes('text-purple-500 mb-6')
+                    ui.label('🧠 AI が深く分析中...').classes('text-2xl font-bold mb-3 text-purple-700')
+                    ui.label('水質データと過去の履歴を総合的に分析しています').classes('text-lg text-gray-600 mb-2')
+                    ui.label('しばらくお待ちください...').classes('text-sm text-gray-500')
+                    ui.linear_progress().classes('w-full mt-4').props('indeterminate color=purple')
+            dialog.open()
+
+            try:
+                headers = {
+                    'Authorization': f'Bearer {access_token}',
+                    'Content-Type': 'application/json'
+                }
+                # 非同期でAPIリクエストを実行（Connection lost対策）
+                import asyncio
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(
+                    None, 
+                    lambda: requests.post(f"{DJANGO_API_BASE_URL}/generate-advice/", headers=headers, json=advice_data, timeout=60)
+                )
+                response.raise_for_status()
+
+                advice_result = response.json()
+                advice_text = advice_result.get('advice', 'アドバイスを生成できませんでした。')
+                
+                # アドバイス完了通知
+                ui.notify('✅ AIアドバイス生成完了！', type='positive')
+
+                # 新しいダイアログでアドバイスを表示
+                with ui.dialog() as advice_dialog:
+                    with ui.card().classes('w-full max-w-2xl q-pa-md'):
+                        ui.label('AIアドバイス').classes('text-h6 text-primary mb-4')
+                        ui.markdown(advice_text).classes('whitespace-pre-wrap q-mb-md')
+                        ui.button('閉じる', on_click=advice_dialog.close).classes('w-full')
+                advice_dialog.open()
+
+            except requests.exceptions.RequestException as e:
+                error_response = response.json() if 'response' in locals() and hasattr(response, 'json') else {}
+                error_message = error_response.get('detail', str(e))
+                ui.notify(f'❌ AIアドバイス生成失敗: {error_message}', type='negative')
+                if "API key" in error_message or "API_KEY" in error_message:
+                    ui.notify("Gemini APIキーが正しく設定されているか確認してください。", type='negative', timeout=5000)
+            except Exception as e:
+                ui.notify(f'❌ 予期せぬエラーが発生しました: {e}', type='negative')
+
+        ui.button('AIアドバイスを生成', icon='psychology', on_click=generate_ai_advice_edit).classes('px-6 py-3 bg-purple-600 text-white rounded-lg shadow-md hover:bg-purple-700 w-full mb-4')
+
+        ui.separator().classes('my-6')
+
         # 更新ボタン
         async def update_log_entry():
             water_data = {
@@ -788,7 +1183,7 @@ async def edit_log_entry_page(log_id: int):
             except Exception as e:
                 ui.notify(f'予期せぬエラーが発生しました: {e}', type='negative')
 
-        ui.button('飼育ログを更新', on_click=update_log_entry).classes('px-6 py-3 bg-green-600 text-white rounded-lg shadow-md hover:bg-green-700 w-full mb-4')
+        ui.button('飼育ログを更新', icon='update', on_click=update_log_entry).classes('px-6 py-3 bg-green-600 text-white rounded-lg shadow-md hover:bg-green-700 w-full mb-4')
         ui.button('キャンセル', on_click=lambda: ui.navigate.to(f'/logs/{log_id}')).props('flat color=grey').classes('w-full mt-4')
 
 

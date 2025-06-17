@@ -163,6 +163,9 @@ class AdviceGenerateView(APIView):
         fish_type = request.data.get('fish_type', '一般的な熱帯魚')
         tank_type = request.data.get('tank_type', '淡水') # 淡水/海水など
 
+        # ユーザーの過去の飼育ログを取得（最新5件）
+        recent_logs = LogEntry.objects.filter(user=request.user).order_by('-log_date')[:5]
+        
         try:
             gemini_api_key = os.environ.get("GEMINI_API_KEY")
             if not gemini_api_key:
@@ -184,15 +187,34 @@ class AdviceGenerateView(APIView):
             
             water_data_for_prompt = ", ".join(water_data_str_parts) if water_data_str_parts else "（データなし）"
 
+            # 過去のログ情報をプロンプトに追加
+            log_history_text = ""
+            if recent_logs.exists():
+                log_history_text = "\n\n【参考：過去の飼育ログ履歴】\n"
+                for i, log in enumerate(recent_logs, 1):
+                    log_data_parts = []
+                    if log.water_data:
+                        for key, value in log.water_data.items():
+                            if value is not None:
+                                log_data_parts.append(f"{key}: {value}")
+                    log_data_str = ", ".join(log_data_parts) if log_data_parts else "データなし"
+                    log_history_text += f"{i}. {log.log_date} - 水質: {log_data_str}"
+                    if log.notes:
+                        log_history_text += f" (メモ: {log.notes[:50]}{'...' if len(log.notes) > 50 else ''})"
+                    log_history_text += "\n"
+                log_history_text += "\n上記の過去データも踏まえて、水質の変化傾向や改善点があれば言及してください。"
             
             prompt_template = (
                 f"あなたは水槽の専門家です。以下の水槽のデータに基づいて、具体的で分かりやすいアドバイスをしてください。\n\n"
+                f"【現在の状況】\n"
                 f"水槽の種類: {tank_type}\n"
                 f"主な魚の種類: {fish_type}\n"
                 f"水質データ: {water_data_for_prompt}\n"
-                f"その他メモ: {notes}\n\n"
+                f"その他メモ: {notes}"
+                f"{log_history_text}\n\n"
                 f"診断結果と、魚が快適に過ごせるように、具体的にどうすれば良いか教えてください。改善策は箇条書きで、専門用語は避け、初心者にも理解できるように説明してください。"
                 f"現在の水質が良い場合は、それを維持するためのアドバイスをしてください。"
+                f"過去のデータがある場合は、変化の傾向についてもコメントしてください。"
             )
             
             # Geminiにプロンプトを送信
