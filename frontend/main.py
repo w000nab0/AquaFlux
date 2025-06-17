@@ -183,7 +183,7 @@ async def logs_page():
                 {'name': 'tank_type', 'label': '水槽の種類', 'field': 'tank_type', 'sortable': True},
                 {'name': 'water_data', 'label': '水質データ', 'field': 'water_data'},
                 {'name': 'notes', 'label': 'メモ', 'field': 'notes'},
-                {'name': 'actions', 'label': '操作', 'field': 'actions'} # 操作ボタン用のカラム
+                {'name': 'actions', 'label': '操作', 'field': 'actions', 'align': 'center'}
             ]
             rows = []
             for log in logs:
@@ -206,28 +206,21 @@ async def logs_page():
                     'tank_type': log['tank_type'],
                     'water_data': water_data_str,
                     'notes': (log['notes'][:50] + '...') if log['notes'] and len(log['notes']) > 50 else (log['notes'] if log['notes'] else 'なし'),
-                    # 'user_username': log['user_username'] # 必要であれば表示
+                    'actions': None
                 }
                 rows.append(row)
 
             with log_data_container:
                 log_table = ui.table(columns=columns, rows=rows, row_key='id').classes('w-full shadow-lg rounded-lg')
                 
-                # テーブルの行クリックイベントをハンドル (詳細ページへ遷移)
-                #log_table.on('rowClick', lambda e: ui.navigate.to(f'/logs/{e.row["id"]}')) 
-                
-                with log_table.add_slot('body-cell-actions') as cell:
-                    with ui.row(): # ボタンを横に並べるために ui.row を使用
-                        ui.button('詳細', icon='info', on_click=lambda: ui.notify('行をクリックしてください')).props('flat dense')
-                        ui.button('編集', icon='edit', on_click=lambda: ui.notify('行をクリックしてください')).props('flat dense')
-                        ui.button('削除', icon='delete', on_click=lambda: ui.notify('行をクリックしてください')).props('flat dense color=red')
-                     # 行をクリックしたときに何が e.args に入るかを調べる
-                    def handle_row_click(e):
-                        log_id = e.args[1]['id']
-                        ui.navigate.to(f'/logs/{log_id}') 
-                        
-                    log_table.on('rowClick', handle_row_click) 
+                def create_action_buttons(row_id):
+                    with ui.row().classes('justify-center gap-2'):
+                        ui.button('詳細', icon='info', on_click=lambda: ui.navigate.to(f'/logs/{row_id}')).props('flat dense')
+                        ui.button('編集', icon='edit', on_click=lambda: ui.navigate.to(f'/logs/{row_id}/edit')).props('flat dense')
+                        ui.button('削除', icon='delete', on_click=lambda: delete_log_entry(row_id)).props('flat dense color=red')
 
+                for row in rows:
+                    row['actions'] = create_action_buttons(row['id'])
 
         except requests.exceptions.RequestException as e:
             ui.notify(f'飼育ログの取得に失敗しました: {e}', type='negative')
@@ -694,13 +687,13 @@ def register_page():
 @ui.page('/logs/{log_id}/edit')
 @auth_protected
 async def edit_log_entry_page(log_id: int):
+    create_common_layout()
+
     access_token = app.storage.user.get('access_token')
     if not access_token:
         ui.notify('ログインしていません。', type='negative')
         ui.navigate.to('/login')
         return
-
-    log_data_ref = {'value': None} # 編集対象のログデータを格納する参照
 
     with ui.header().classes('items-center justify-between text-white bg-blue-600 p-4'):
         ui.label(f'飼育ログ編集 (ID: {log_id})').classes('text-2xl font-bold')
@@ -712,8 +705,6 @@ async def edit_log_entry_page(log_id: int):
 
     with ui.card().classes('w-full max-w-2xl mx-auto my-8 p-6 shadow-xl rounded-lg'):
         # UI入力コンポーネントの定義
-        # 既存のコードをそのまま使用してください (ph_input, kh_inputなど)
-
         with ui.grid(columns=2).classes('w-full gap-4'):
             ph_input = ui.number('pH').props('step=0.1 min=0 max=14').classes('w-full')
             kh_input = ui.number('KH (炭酸塩硬度)').props('min=0 max=20').classes('w-full')
@@ -724,187 +715,41 @@ async def edit_log_entry_page(log_id: int):
         
         notes_input = ui.textarea('メモ').classes('w-full mt-4').props('rows=3')
         fish_type_input = ui.input('魚種 (例: ネオンテトラ)').classes('w-full mt-4')
-        tank_type_input = ui.input('水槽の種類 (例: 60cm水槽)').classes('w-full mt-4')
         
-        # ログデータのロード部分 (既存のコード)
-        @ui.refreshable
-        async def load_log_data():
-            try:
-                headers = {'Authorization': f'Bearer {access_token}'}
-                response = await app.loop.run_in_executor(
-                    None,
-                    lambda: requests.get(f"{DJANGO_API_BASE_URL}/logs/{log_id}/", headers=headers)
-                )
-                response.raise_for_status()
-                log_data = response.json()
-                log_data_ref['value'] = log_data # データを参照に保存
-
-                # フォームにデータを設定
-                # Noneの場合は0にするなどの考慮が必要な場合もあります
-                ph_input.value = log_data.get('water_data', {}).get('ph')
-                kh_input.value = log_data.get('water_data', {}).get('kh')
-                gh_input.value = log_data.get('water_data', {}).get('gh')
-                no2_input.value = log_data.get('water_data', {}).get('no2')
-                no3_input.value = log_data.get('water_data', {}).get('no3')
-                cl2_input.value = log_data.get('water_data', {}).get('cl2')
-                notes_input.value = log_data.get('notes')
-                fish_type_input.value = log_data.get('fish_type')
-                tank_type_input.value = log_data.get('tank_type')
-                
-                # 更新を強制 (NiceGUIの更新を促す)
-                ph_input.update()
-                kh_input.update()
-                gh_input.update()
-                no2_input.update()
-                no3_input.update()
-                cl2_input.update()
-                notes_input.update()
-                fish_type_input.update()
-                tank_type_input.update()
-
-            except requests.exceptions.RequestException as e:
-                error_response = response.json() if hasattr(response, 'json') else {}
-                error_message = error_response.get('detail', str(e))
-                ui.notify(f'ログデータのロードに失敗しました: {error_message}', type='negative')
-                # エラー時は前のページに戻るか、メッセージを表示
-                ui.navigate.to('/logs')
-            except Exception as e:
-                ui.notify(f'予期せぬエラーが発生しました: {e}', type='negative')
-                ui.navigate.to('/logs')
-
-        await load_log_data() # ページ読み込み時にデータをロード
-
-        # ここに generate_ai_advice 関数を定義 (new_log_entry_page とほぼ同じ内容)
-        async def generate_ai_advice():
-            access_token = app.storage.user.get('access_token')
-            if not access_token:
-                ui.notify('ログインしていません。', type='negative')
-                ui.navigate.to('/login')
-                return
-
-            water_data = {
-                "ph": ph_input.value,
-                "kh": kh_input.value,
-                "gh": gh_input.value,
-                "no2": no2_input.value,
-                "no3": no3_input.value,
-                "cl2": cl2_input.value,
-            }
-            advice_data = {
-                "water_data": water_data,
-                "notes": notes_input.value,
-                "fish_type": fish_type_input.value,
-                "tank_type": tank_type_input.value,
-            }
-
-            dialog = ui.dialog().props('persistent')
-            with dialog:
-                with ui.card().classes('items-center'):
-                    ui.spinner(size='xl', thickness=10).classes('text-blue-500')
-                    ui.label('AIアドバイスを生成中...').classes('text-lg mt-4')
-            dialog.open()
-
-            try:
-                headers = {
-                    'Authorization': f'Bearer {access_token}',
-                    'Content-Type': 'application/json'
-                }
-                response = requests.post(f"{DJANGO_API_BASE_URL}/generate-advice/", headers=headers, json=advice_data)
-                response.raise_for_status()
-
-                advice_result = response.json()
-                advice_text = advice_result.get('advice', 'アドバイスを生成できませんでした。')
-                
-                dialog.close()
-
-                with ui.dialog() as advice_dialog:
-                    with ui.card().classes('w-full max-w-2xl q-pa-md'):
-                        ui.label('AIアドバイス').classes('text-h6 text-primary mb-4')
-                        ui.markdown(advice_text).classes('whitespace-pre-wrap q-mb-md')
-                        ui.button('閉じる', on_click=advice_dialog.close).classes('w-full')
-                advice_dialog.open()
-
-            except requests.exceptions.RequestException as e:
-                dialog.close()
-                error_response = response.json() if hasattr(response, 'json') else {}
-                error_message = error_response.get('detail', str(e))
-                ui.notify(f'AIアドバイス生成失敗: {error_message}', type='negative')
-                if "API key" in error_message or "API_KEY" in error_message:
-                    ui.notify("Gemini APIキーが正しく設定されているか確認してください。", type='negative', timeout=5000)
-            except Exception as e:
-                dialog.close()
-                ui.notify(f'予期せぬエラーが発生しました: {e}', type='negative')
-
-        ui.button('AIアドバイスを生成', on_click=generate_ai_advice).classes('px-6 py-3 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700 w-full')
-
-        ui.label('水質試験紙をアップロードして自動入力').classes('text-md font-semibold mt-4 mb-2')
-        
-        # ここに handle_image_upload 関数を定義 (new_log_entry_page とほぼ同じ内容)
-        async def handle_image_upload(e):
-            access_token = app.storage.user.get('access_token')
-            if not access_token:
-                ui.notify('ログインしていません。', type='negative')
-                ui.navigate.to('/login')
-                return
-
-            if not e.files:
-                ui.notify('ファイルが選択されていません。', type='negative')
-                return
-
-            file = e.files[0]
-            
-            dialog = ui.dialog().props('persistent')
-            with dialog:
-                with ui.card().classes('items-center'):
-                    ui.spinner(size='xl', thickness=10).classes('text-blue-500')
-                    ui.label('画像を解析中...').classes('text-lg mt-4')
-            dialog.open()
-
-            try:
-                image_bytes = await e.content.read() 
-                files = {'image': (file.name, image_bytes, file.type)}
-                headers = {'Authorization': f'Bearer {access_token}'}
-
-                response = requests.post(f"{DJANGO_API_BASE_URL}/analyze-image/", headers=headers, files=files)
-                response.raise_for_status()
-
-                analysis_result = response.json()
-                water_data_from_image = analysis_result.get('water_data', {})
-
-                ph_input.value = water_data_from_image.get('ph', ph_input.value)
-                kh_input.value = water_data_from_image.get('kh', kh_input.value)
-                gh_input.value = water_data_from_image.get('gh', gh_input.value)
-                no2_input.value = water_data_from_image.get('no2', no2_input.value)
-                no3_input.value = water_data_from_image.get('no3', no3_input.value)
-                cl2_input.value = water_data_from_image.get('cl2', cl2_input.value)
-
-                ui.notify('画像から水質データを自動入力しました！', type='positive')
-
-            except requests.exceptions.RequestException as e:
-                dialog.close()
-                error_response = response.json() if hasattr(response, 'json') else {}
-                error_message = error_response.get('detail', str(e))
-                ui.notify(f'画像解析失敗: {error_message}', type='negative')
-            except Exception as e:
-                ui.notify(f'予期せぬエラーが発生しました: {e}', type='negative')
-            finally:
-                dialog.close()
-
-        ui.upload(label='画像をアップロード', on_upload=handle_image_upload, auto_upload=True, max_file_size=5_000_000, max_files=1).classes('w-full')
-        ui.label('推奨: JPEG/PNG形式, 最大5MB').classes('text-sm text-gray-500')
-
-        ui.separator().classes('my-6')
-
-        ui.label('魚と水槽の情報').classes('text-lg font-semibold mb-4 text-primary')
-        fish_type_input = ui.input('魚の種類', placeholder='例: ネオンテトラ').classes('w-full mb-4')
-
         tank_type_options_map = {
             'freshwater': '淡水',
             'saltwater': '海水',
         }
-        tank_type_input = ui.select(options=tank_type_options_map, label='水槽の種類').classes('w-full mb-4') 
+        tank_type_input = ui.select(options=tank_type_options_map, label='水槽の種類').classes('w-full mt-4')
 
-        notes_input = ui.textarea('メモ', placeholder='今日の観察、水換え記録など').classes('w-full h-32 mb-6')
+        # ログデータのロード
+        async def load_log_data():
+            try:
+                headers = {'Authorization': f'Bearer {access_token}'}
+                response = requests.get(f"{DJANGO_API_BASE_URL}/logs/{log_id}/", headers=headers)
+                response.raise_for_status()
+                log_data = response.json()
+
+                # フォームにデータを設定
+                water_data = log_data.get('water_data', {})
+                ph_input.value = water_data.get('ph')
+                kh_input.value = water_data.get('kh')
+                gh_input.value = water_data.get('gh')
+                no2_input.value = water_data.get('no2')
+                no3_input.value = water_data.get('no3')
+                cl2_input.value = water_data.get('cl2')
+                notes_input.value = log_data.get('notes')
+                fish_type_input.value = log_data.get('fish_type')
+                tank_type_input.value = log_data.get('tank_type')
+
+            except requests.exceptions.RequestException as e:
+                ui.notify(f'ログデータのロードに失敗しました: {e}', type='negative')
+                ui.navigate.to('/logs')
+            except Exception as e:
+                ui.notify(f'予期せぬエラーが発生しました: {e}', type='negative')
+                ui.navigate.to('/logs')
+
+        await load_log_data()
 
         # 更新ボタン
         async def update_log_entry():
@@ -923,12 +768,6 @@ async def edit_log_entry_page(log_id: int):
                 "notes": notes_input.value,
             }
 
-            access_token = app.storage.user.get('access_token')
-            if not access_token:
-                ui.notify('ログインしていません。', type='negative')
-                ui.navigate.to('/login')
-                return
-
             headers = {
                 'Authorization': f'Bearer {access_token}',
                 'Content-Type': 'application/json'
@@ -936,7 +775,7 @@ async def edit_log_entry_page(log_id: int):
 
             try:
                 response = requests.put(f"{DJANGO_API_BASE_URL}/logs/{log_id}/", headers=headers, json=updated_log_data)
-                response.raise_for_status() 
+                response.raise_for_status()
 
                 ui.notify('飼育ログを更新しました！', type='positive')
                 ui.navigate.to(f'/logs/{log_id}')
@@ -950,125 +789,7 @@ async def edit_log_entry_page(log_id: int):
                 ui.notify(f'予期せぬエラーが発生しました: {e}', type='negative')
 
         ui.button('飼育ログを更新', on_click=update_log_entry).classes('px-6 py-3 bg-green-600 text-white rounded-lg shadow-md hover:bg-green-700 w-full mb-4')
-        
-
-        # 'AIアドバイスを生成' ボタンの on_click ハンドラを更新
-        ui.button('AIアドバイスを生成', on_click=generate_ai_advice).classes('px-6 py-3 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700 w-full')
-
-
         ui.button('キャンセル', on_click=lambda: ui.navigate.to(f'/logs/{log_id}')).props('flat color=grey').classes('w-full mt-4')
-
-    async def load_log_data():
-        loading_container.visible = True
-        form_container.visible = False
-
-        access_token = app.storage.user.get('access_token')
-        headers = {'Authorization': f'Bearer {access_token}'}
-
-        try:
-            response = requests.get(f"{DJANGO_API_BASE_URL}/logs/{log_id}/", headers=headers)
-            response.raise_for_status()
-            log_data = response.json()
-
-            water_data = log_data.get('water_data', {})
-            ph_input.value = water_data.get('ph')
-            kh_input.value = water_data.get('kh')
-            gh_input.value = water_data.get('gh')
-            no2_input.value = water_data.get('no2')
-            no3_input.value = water_data.get('no3')
-            cl2_input.value = water_data.get('cl2')
-            fish_type_input.value = log_data.get('fish_type')
-            tank_type_input.value = log_data.get('tank_type')
-            notes_input.value = log_data.get('notes')
-
-            loading_container.visible = False
-            form_container.visible = True
-
-        except requests.exceptions.RequestException as e:
-            ui.notify(f'ログデータのロードに失敗しました: {e}', type='negative')
-            loading_label.set_text('ログデータのロードに失敗しました。')
-        except Exception as e:
-            ui.notify(f'予期せぬエラーが発生しました: {e}', type='negative')
-            loading_label.set_text('予期せぬエラーが発生しました。')
-
-    ui.timer(0.1, load_log_data, once=True)
-
-
-
-    # フォームのUI構成を定義
-    with form_container:
-        ui.label('水質データ').classes('text-lg font-semibold mb-4 text-primary')
-        with ui.row().classes('w-full justify-between gap-4 mb-4'):
-            ph_input.classes('w-1/3')
-            kh_input.classes('w-1/3')
-            gh_input.classes('w-1/3')
-        with ui.row().classes('w-full justify-between gap-4 mb-6'):
-            no2_input.classes('w-1/3')
-            no3_input.classes('w-1/3')
-            cl2_input.classes('w-1/3')
-        
-        ui.label('水質試験紙をアップロードして自動入力').classes('text-md font-semibold mt-4 mb-2')
-        ui.label('(画像アップロード機能は後で実装します)').classes('text-sm text-gray-500')
-
-        ui.separator().classes('my-6')
-
-        ui.label('魚と水槽の情報').classes('text-lg font-semibold mb-4 text-primary')
-        fish_type_input.classes('w-full mb-4')
-        tank_type_input.classes('w-full mb-4')
-        notes_input.classes('w-full h-32 mb-6')
-
-        # 更新ボタン
-        async def update_log_entry():
-            water_data = {
-                "ph": ph_input.value,
-                "kh": kh_input.value,
-                "gh": gh_input.value,
-                "no2": no2_input.value,
-                "no3": no3_input.value,
-                "cl2": cl2_input.value,
-            }
-            updated_log_data = {
-                "water_data": water_data,
-                "fish_type": fish_type_input.value,
-                "tank_type": tank_type_input.value, # 修正後のui.selectなので直接値が取れる
-                "notes": notes_input.value,
-            }
-
-            access_token = app.storage.user.get('access_token')
-            if not access_token:
-                ui.notify('ログインしていません。', type='negative')
-                ui.navigate.to('/login')
-                return
-
-            headers = {
-                'Authorization': f'Bearer {access_token}',
-                'Content-Type': 'application/json'
-            }
-
-            try:
-                response = requests.put(f"{DJANGO_API_BASE_URL}/logs/{log_id}/", headers=headers, json=updated_log_data)
-                response.raise_for_status() 
-
-                ui.notify('飼育ログを更新しました！', type='positive')
-                ui.navigate.to(f'/logs/{log_id}') # 詳細ページに戻る
-            except requests.exceptions.RequestException as e:
-                error_response = response.json() if hasattr(response, 'json') else {}
-                error_message = error_response.get('detail', str(e))
-                if 'tank_type' in error_response:
-                    error_message = f"水槽の種類エラー: {error_response['tank_type'][0]}"
-                ui.notify(f'飼育ログの更新に失敗しました: {error_message}', type='negative')
-            except Exception as e:
-                ui.notify(f'予期せぬエラーが発生しました: {e}', type='negative')
-
-        ui.button('飼育ログを更新', on_click=update_log_entry).classes('px-6 py-3 bg-green-600 text-white rounded-lg shadow-md hover:bg-green-700 w-full mb-4')
-        
-        ui.button('AIアドバイスを生成 (未実装)', on_click=lambda: ui.notify('AIアドバイス機能は現在開発中です。')).classes('px-6 py-3 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700 w-full')
-        
-        ui.button('キャンセル', on_click=lambda: ui.navigate.to(f'/logs/{log_id}')).props('flat color=grey').classes('w-full mt-4')
-    
-    # ページロード時にデータをロード
-    ui.timer(0.1, load_log_data, once=True) 
-
 
 
 # アプリケーションの実行設定
